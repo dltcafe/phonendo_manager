@@ -1,47 +1,53 @@
-import express from "express";
-import { createServer } from "http";
-import { Server } from "socket.io";
+import "dotenv/config";
+import { start, stop } from "./libp2p-node.js";
 
-const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, { /* options */ });
+import uuid4 from "uuid4";
+import { pipe } from "it-pipe";
 
-console.log("Phonendo Manager Initialization");
+import { toString } from "uint8arrays/to-string";
+import { fromString } from "uint8arrays/from-string";
 
-io.on("connection", (socket) => {
-    console.log("New socket connection ", socket.id);
+const triggers = {
+  storage: {
+    connect: async (node, storage) => {
+      let message = {
+        key: uuid4(),
+        value: uuid4(),
+      };
+      console.log("Test write", message);
 
-    socket.on("disconnect", (reason) => {
-        console.log("Disconnected ", socket.id);
-    });
+      const { stream } = await node.dialProtocol(storage, "/write/1.0.0");
+      await pipe(
+        [fromString(`${message.key}##${message.value}`)],
+        stream,
+        async function (source) {
+          for await (const data of source) {
+            console.log("Result:", toString(data));
+            await triggers.storage.write(node, storage, message.key);
+          }
+        }
+      );
+    },
+    write: async (node, storage, key) => {
+      console.log("Test read", key);
 
-    // Receives data from Phonendo Reader and send to Phonendo Storage
-    socket.on("reader_new_data", (data) => {
-        console.log("New data received from Reader");
-        console.log(data);
-        io.sockets.emit("storage_save_data_raw", data);
-    });
+      const { stream } = await node.dialProtocol(storage, "/read/1.0.0");
+      await pipe([fromString(key)], stream, async function (source) {
+        for await (const data of source) {
+          console.log("Result:", toString(data));
+          await exit();
+        }
+      });
+    },
+  },
+};
 
-    // Receives data modeled and saved from Phonendo Storage
-    socket.on("storage_return_data_raw", (data) => {
-        console.log("Data modeled from Storage");
-        console.log(data);
-        io.sockets.emit("verifier_init_verification", data);
-    });
+start(triggers).then().catch(console.error);
 
-    // Receives data verified from Phonendo Verifier and send to Phonendo Storage
-    socket.on("verifier_return_data_verified", (data) => {
-        console.log("Data verified from Verifier");
-        console.log(data);
-        io.sockets.emit("storage_save_data_processed", data);
-    });
+const exit = async () => {
+  await stop();
+  process.exit(0);
+};
 
-    // Receives data already processed and saved and send to Publisher
-    socket.on("storage_return_data_processed", (data) => {
-        console.log("Data verified saved from Storage");
-        console.log(data);
-        io.sockets.emit("publisher_init_publication", data);
-    });
-});
-
-httpServer.listen(3000);
+process.on("SIGTERM", exit);
+process.on("SIGINT", exit);

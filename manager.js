@@ -12,7 +12,10 @@ const triggers = {
     connect: async (node) => {
       let message = {
         key: uuid4(),
-        value: uuid4(),
+        value: {
+          field_a: uuid4(),
+          field_b: "rocks",
+        },
       };
       console.log("Test write", message);
 
@@ -21,7 +24,7 @@ const triggers = {
         "/write/1.0.0"
       );
       await pipe(
-        [fromString(`${message.key}##${message.value}`)],
+        [fromString(`${message.key}##${JSON.stringify(message.value)}`)],
         stream,
         async function (source) {
           for await (const data of source) {
@@ -40,7 +43,13 @@ const triggers = {
       );
       await pipe([fromString(key)], stream, async function (source) {
         for await (const data of source) {
-          console.log("Result:", toString(data));
+          let v = toString(data);
+          try {
+            v = JSON.parse(v);
+            console.log("Result:", v);
+          } catch (error) {
+            console.error(`"${v}" is not a valid JSON object`);
+          }
           await exit();
         }
       });

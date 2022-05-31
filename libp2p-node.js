@@ -13,7 +13,7 @@ import { fromString } from "uint8arrays/from-string";
 
 var triggers = undefined;
 var addresses = new Set();
-var storage = undefined;
+var nodes = {};
 
 const node = await createLibp2p({
   addresses: {
@@ -33,35 +33,25 @@ const connect = async (id) => {
   if (!addresses.has(id.toString())) {
     addresses.add(id.toString());
     const { stream } = await node.dialProtocol(id, "/discover/1.0.0");
-    await pipe(
-      [fromString("discover")],
-      stream,
-      async function (source) {
-        for await (const data of source) {
-          let node_type = toString(data);
-          console.log(
-            `Added ${node_type} peer ${id.toString()} to the address book`
-          );
-          if (node_type === "phonendo_storage") {
-            if (storage) {
-              console.log(
-                `The previous storage peer (${storage}) has been overriden`
-              );
-            }
-            await triggers.storage.connect(node, storage = id);
-          }
+    await pipe([fromString("discover")], stream, async function (source) {
+      for await (const data of source) {
+        let node_type = toString(data);
+        console.log(`Added ${node_type} peer ${id.toString()}`);
+        if (nodes[node_type]) {
+          console.warn(`${node_type}:{${nodes[node_type]}} has been overriden`);
         }
+        nodes[node_type] = id;
+        await triggers[node_type].connect(node);
       }
-    );
+    });
   }
 };
 
 const start = async (aux_triggers) => {
   await node.start();
-  console.log(`${process.env.SERVICE_NAME} has started`);
 
   node.getMultiaddrs().forEach((addr) => {
-    console.log(`Listening on address: ${addr.toString()}`);
+    console.log("Listening on", addr.toString());
   });
 
   triggers = aux_triggers;
@@ -71,9 +61,11 @@ const start = async (aux_triggers) => {
   });
 };
 
+const get_node = (node_type) => nodes[node_type];
+
 const stop = async () => {
   await node.stop();
   console.log(`${process.env.SERVICE_NAME} has stopped`);
 };
 
-export { start, stop };
+export { start, stop, get_node };

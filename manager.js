@@ -40,17 +40,7 @@ var verifierPublicKey = undefined;
 // Phonendo storage triggers
 const phonendo_storage = {
   connect: async (node) => {
-    setInterval(async () => {
-      let message = {
-        key: uuid4(),
-        value: {
-          field_a: uuid4(),
-          field_b: "rocks",
-        },
-      };
-      console.debug("Simulate capture", message.value);
-      await triggers.phonendo_storage.capture(node, message);
-    }, 5000);
+      await triggers.phonendo_storage.reconnect(node);
   },
 
   capture: async (node, message) => {
@@ -89,6 +79,64 @@ const phonendo_storage = {
       }
     );
   },
+
+  reconnect: async (node) => {
+    await pipe_wrapper(
+        "reconnect",
+    await dial(node, "storage", "reconnect"),
+        async (data) => {
+          let pendingItemsJson = toString(data);
+          try {
+            pendingItemsJson = JSON.parse(pendingItemsJson);
+            let itemsCount = Object.keys(pendingItemsJson).length;
+
+            if (itemsCount > 0) {
+              if (are_services_configured()) {
+                console.log(`${itemsCount} captured items without verification`);
+
+                for(let item in pendingItemsJson){
+                    let [key, value] = pendingItemsJson[item];
+                  console.log(`Verifying again: ${key}`);
+
+                  await triggers.phonendo_verifier.verify(
+                      node,
+                      key,
+                      value
+                  );
+                }
+              } else {
+                console.error(`Reconnection failed: Verifier is down. ${itemsCount} captured items without verification`);
+
+                  setTimeout(function () {
+                      triggers.phonendo_storage.reconnect(node);
+                  }, 10000);
+              }
+            } else {
+                console.log("Reconnection successfully, nothing pending to verify");
+            }
+
+              await triggers.phonendo_storage.initFake(node);
+          } catch (error) {
+            console.error(`"${value}" is not a valid JSON object`);
+          }
+        }
+    );
+  },
+
+    initFake: async (node) => {
+        setInterval(async () => {
+            let message = {
+                key: uuid4(),
+                value: {
+                    field_a: uuid4(),
+                    field_b: "rocks",
+                },
+            };
+            console.debug("Simulate capture", message.value);
+            await triggers.phonendo_storage.capture(node, message);
+
+        }, 5000);
+    }
 };
 
 // Phonendo verifier triggers
@@ -107,7 +155,6 @@ const phonendo_verifier = {
         console.debug("Public key obtained");
       }
     );
-    console.log("TODO verify history");
   },
 
   verify: async (node, key, message) => {

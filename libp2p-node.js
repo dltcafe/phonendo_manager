@@ -61,7 +61,19 @@ const start = async (aux_triggers) => {
   });
 };
 
-const get_node = (node_type) => nodes[node_type];
+const get_node = async (node_type) => {
+  let result = nodes[node_type];
+  if (result) {
+    try {
+      await node.ping(result);
+    } catch (err) {
+      // If ping launches an exception the node is down or unavailable
+      delete nodes[node_type];
+      result = undefined;
+    }
+  }
+  return result;
+};
 
 const stop = async () => {
   await node.stop();

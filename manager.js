@@ -9,9 +9,12 @@ import { fromString } from "uint8arrays/from-string";
 
 const { createVerify, createPublicKey } = await import("node:crypto");
 
-const are_services_configured = () => {
-  for (const v of ["phonendo_storage", "phonendo_verifier"]) {
-    if (get_node(v) == undefined) {
+var fake_interval = undefined;
+
+const are_services_configured = async (services) => {
+  for (const service of services) {
+    let node = await get_node(`phonendo_${service}`);
+    if (node == undefined) {
       return false;
     }
   }
@@ -19,12 +22,12 @@ const are_services_configured = () => {
 };
 
 const dial = async (node, node_type, protocol) => {
-  const { stream } = await node.dialProtocol(
-    get_node(`phonendo_${node_type}`),
-    `/${protocol}/1.0.0`
-  );
-
-  return stream;
+  let service = await get_node(`phonendo_${node_type}`);
+  if (service) {
+    const { stream } = await node.dialProtocol(service, `/${protocol}/1.0.0`);
+    return stream;
+  }
+  return undefined;
 };
 
 const pipe_wrapper = async (input, stream, callback) => {
@@ -37,10 +40,63 @@ const pipe_wrapper = async (input, stream, callback) => {
 
 var verifierPublicKey = undefined;
 
+// Phonendo reader triggers
+const phonendo_reader = {
+  init_fake: async (node) => {
+    if (!fake_interval) {
+      fake_interval = setInterval(async () => {
+        let message = {
+          key: uuid4(),
+          value: {
+            field_a: uuid4(),
+            field_b: "rocks",
+          },
+        };
+        console.debug("Simulate capture", message.value);
+        if (await are_services_configured(["storage"])) {
+          await triggers.phonendo_storage.capture(node, message);
+        } else {
+          console.warn("phonendo_storage unavailable. Capture will be lost");
+        }
+      }, 5000);
+    }
+  },
+};
+
 // Phonendo storage triggers
 const phonendo_storage = {
   connect: async (node) => {
-      await triggers.phonendo_storage.reconnect(node);
+    if (await are_services_configured(["verifier"])) {
+      await triggers.phonendo_storage.verify_cache(node);
+    }
+    await triggers.phonendo_reader.init_fake(node);
+  },
+
+  verify_cache: async (node) => {
+    await pipe_wrapper(
+      "captured",
+      await dial(node, "storage", "cache"),
+      async (data) => {
+        let pendingItemsJson = toString(data);
+        try {
+          pendingItemsJson = JSON.parse(pendingItemsJson);
+          let itemsCount = Object.keys(pendingItemsJson).length;
+
+          if (itemsCount > 0) {
+            console.log(`${itemsCount} captured items without verification`);
+
+            for (let item in pendingItemsJson) {
+              let [key, value] = pendingItemsJson[item];
+              if (await are_services_configured(["verifier"])) {
+                await triggers.phonendo_verifier.verify(node, key, value);
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`"${value}" is not a valid JSON object`);
+        }
+      }
+    );
   },
 
   capture: async (node, message) => {
@@ -48,7 +104,7 @@ const phonendo_storage = {
       `${message.key}##${JSON.stringify(message.value)}`,
       await dial(node, "storage", "capture"),
       async () => {
-        if (are_services_configured()) {
+        if (await are_services_configured(["verifier", "storage"])) {
           await triggers.phonendo_verifier.verify(
             node,
             message.key,
@@ -79,64 +135,6 @@ const phonendo_storage = {
       }
     );
   },
-
-  reconnect: async (node) => {
-    await pipe_wrapper(
-        "reconnect",
-    await dial(node, "storage", "reconnect"),
-        async (data) => {
-          let pendingItemsJson = toString(data);
-          try {
-            pendingItemsJson = JSON.parse(pendingItemsJson);
-            let itemsCount = Object.keys(pendingItemsJson).length;
-
-            if (itemsCount > 0) {
-              if (are_services_configured()) {
-                console.log(`${itemsCount} captured items without verification`);
-
-                for(let item in pendingItemsJson){
-                    let [key, value] = pendingItemsJson[item];
-                  console.log(`Verifying again: ${key}`);
-
-                  await triggers.phonendo_verifier.verify(
-                      node,
-                      key,
-                      value
-                  );
-                }
-              } else {
-                console.error(`Reconnection failed: Verifier is down. ${itemsCount} captured items without verification`);
-
-                  setTimeout(function () {
-                      triggers.phonendo_storage.reconnect(node);
-                  }, 10000);
-              }
-            } else {
-                console.log("Reconnection successfully, nothing pending to verify");
-            }
-
-              await triggers.phonendo_storage.initFake(node);
-          } catch (error) {
-            console.error(`"${value}" is not a valid JSON object`);
-          }
-        }
-    );
-  },
-
-    initFake: async (node) => {
-        setInterval(async () => {
-            let message = {
-                key: uuid4(),
-                value: {
-                    field_a: uuid4(),
-                    field_b: "rocks",
-                },
-            };
-            console.debug("Simulate capture", message.value);
-            await triggers.phonendo_storage.capture(node, message);
-
-        }, 5000);
-    }
 };
 
 // Phonendo verifier triggers
@@ -155,6 +153,9 @@ const phonendo_verifier = {
         console.debug("Public key obtained");
       }
     );
+    if (await are_services_configured(["storage"])) {
+      await triggers.phonendo_storage.verify_cache(node);
+    }
   },
 
   verify: async (node, key, message) => {
@@ -165,7 +166,6 @@ const phonendo_verifier = {
         let value = toString(data);
         try {
           value = JSON.parse(value);
-          console.debug("Verified message", value);
           let source = value.source;
           let signature = value.signature;
 
@@ -177,9 +177,15 @@ const phonendo_verifier = {
             signature,
             "hex"
           );
-          console.log("Verified result", verification);
+          console.log("Successful verification?", verification);
           if (verification) {
-            await triggers.phonendo_storage.verify(node, key, value);
+            if (await are_services_configured(["storage"])) {
+              await triggers.phonendo_storage.verify(node, key, value);
+            } else {
+              console.warn(
+                "phonendo_storage unavailable. Verification will be lost"
+              );
+            }
           }
         } catch (error) {
           console.error(`"${value}" is not a valid JSON object`);
@@ -197,11 +203,14 @@ const phonendo_publisher = {
 
   publish: async (node, key, value) => {
     console.log("TODO publish on IOTA");
-    await triggers.phonendo_storage.publish(node, key, value);
+    if (await are_services_configured(["storage"])) {
+      await triggers.phonendo_storage.publish(node, key, value);
+    }
   },
 };
 
 const triggers = {
+  phonendo_reader,
   phonendo_storage,
   phonendo_verifier,
   phonendo_publisher,

@@ -7,6 +7,7 @@ import { Mplex } from "@libp2p/mplex";
 import { MulticastDNS } from "@libp2p/mdns";
 
 import { pipe } from "it-pipe";
+import map from "it-map";
 
 import { toString } from "uint8arrays/to-string";
 import { fromString } from "uint8arrays/from-string";
@@ -32,22 +33,32 @@ const node = await createLibp2p({
 const connect = async (id) => {
   if (!addresses.has(id.toString())) {
     addresses.add(id.toString());
-    const { stream } = await node.dialProtocol(id, "/discover/1.0.0");
-    await pipe([fromString("discover")], stream, async function (source) {
-      for await (const data of source) {
-        let node_type = toString(data);
-        console.log(`Added ${node_type} peer ${id.toString()}`);
-        if (nodes[node_type]) {
-          console.warn(`${node_type}:{${nodes[node_type]}} has been overriden`);
+    let aux_stream = undefined;
+    try {
+      const { stream } = await node.dialProtocol(id, "/discover/1.0.0");
+      aux_stream = stream;
+    } catch (err) {
+      // discover protocol unsupported
+    }
+    if (aux_stream) {
+      await pipe([fromString("discover")], aux_stream, async function (source) {
+        for await (const data of source) {
+          let node_type = toString(data);
+          console.log(`Added ${node_type} peer ${id.toString()}`);
+          if (nodes[node_type]) {
+            console.warn(
+              `${node_type}:{${nodes[node_type]}} has been overriden`
+            );
+          }
+          nodes[node_type] = id;
+          await triggers[node_type].connect(node);
         }
-        nodes[node_type] = id;
-        await triggers[node_type].connect(node);
-      }
-    });
+      });
+    }
   }
 };
 
-const start = async (aux_triggers) => {
+const start = async (protocols, aux_triggers) => {
   await node.start();
 
   node.getMultiaddrs().forEach((addr) => {
@@ -55,6 +66,14 @@ const start = async (aux_triggers) => {
   });
 
   triggers = aux_triggers;
+
+  node.handle(Object.keys(protocols), ({ protocol, stream }) => {
+    pipe(
+      stream.source,
+      async (source) => map(source, protocols[protocol]),
+      stream.sink
+    );
+  });
 
   node.addEventListener("peer:discovery", async (peerData) => {
     await connect(peerData.detail.id);
@@ -80,4 +99,4 @@ const stop = async () => {
   console.log(`${process.env.SERVICE_NAME} has stopped`);
 };
 
-export { start, stop, get_node };
+export { node, start, stop, get_node };

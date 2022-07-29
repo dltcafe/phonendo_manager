@@ -1,15 +1,12 @@
 import "dotenv/config";
-import { start, stop, get_node } from "./libp2p-node.js";
+import { node, start, stop, get_node } from "./libp2p-node.js";
 
-import uuid4 from "uuid4";
 import { pipe } from "it-pipe";
 
 import { toString } from "uint8arrays/to-string";
 import { fromString } from "uint8arrays/from-string";
 
 const { createVerify, createPublicKey } = await import("node:crypto");
-
-var fake_interval = undefined;
 
 const are_services_configured = async (services) => {
   for (const service of services) {
@@ -40,36 +37,12 @@ const pipe_wrapper = async (input, stream, callback) => {
 
 var verifierPublicKey = undefined;
 
-// Phonendo reader triggers
-const phonendo_reader = {
-  init_fake: async (node) => {
-    if (!fake_interval) {
-      fake_interval = setInterval(async () => {
-        let message = {
-          key: uuid4(),
-          value: {
-            field_a: uuid4(),
-            field_b: "rocks",
-          },
-        };
-        console.debug("Simulate capture", message.value);
-        if (await are_services_configured(["storage"])) {
-          await triggers.phonendo_storage.capture(node, message);
-        } else {
-          console.warn("phonendo_storage unavailable. Capture will be lost");
-        }
-      }, 5000);
-    }
-  },
-};
-
 // Phonendo storage triggers
 const phonendo_storage = {
   connect: async (node) => {
     if (await are_services_configured(["verifier"])) {
       await triggers.phonendo_storage.verify_cache(node);
     }
-    await triggers.phonendo_reader.init_fake(node);
   },
 
   verify_cache: async (node) => {
@@ -210,13 +183,28 @@ const phonendo_publisher = {
 };
 
 const triggers = {
-  phonendo_reader,
   phonendo_storage,
   phonendo_verifier,
   phonendo_publisher,
 };
 
-start(triggers).then().catch(console.error);
+// Protocols
+const protocols = {
+  "/discover/1.0.0": () => fromString(process.env.SERVICE_NAME),
+  "/capture/1.0.0": async (message) => {
+    if (await are_services_configured(["storage"])) {
+      message = toString(message);
+      message = JSON.parse(message);
+      await triggers.phonendo_storage.capture(node, message);
+      return fromString(true);
+    } else {
+      console.warn("phonendo_storage unavailable. Capture will be lost");
+      return fromString(false);
+    }
+  }
+};
+
+start(protocols, triggers).then().catch(console.error);
 
 const exit = async () => {
   await stop();

@@ -44,14 +44,22 @@ const connect = async (id) => {
       await pipe([fromString("discover")], aux_stream, async function (source) {
         for await (const data of source) {
           let node_type = toString(data);
-          console.log(`Added ${node_type} peer ${id.toString()}`);
-          if (nodes[node_type]) {
-            console.warn(
-              `${node_type}:{${nodes[node_type]}} has been overriden`
-            );
+          if (
+            [
+              "phonendo_storage",
+              "phonendo_verifier",
+              "phonendo_publisher",
+            ].includes(node_type)
+          ) {
+            console.log(`Added ${node_type} peer ${id.toString()}`);
+            if (nodes[node_type]) {
+              console.warn(
+                `${node_type}:{${nodes[node_type]}} has been overriden`
+              );
+            }
+            nodes[node_type] = id;
+            await triggers[node_type].connect(node);
           }
-          nodes[node_type] = id;
-          await triggers[node_type].connect(node);
         }
       });
     }

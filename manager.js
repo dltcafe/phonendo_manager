@@ -50,18 +50,45 @@ const phonendo_storage = {
       "captured",
       await dial(node, "storage", "cache"),
       async (data) => {
-        let pendingItemsJson = toString(data);
+        let cache = toString(data);
         try {
-          pendingItemsJson = JSON.parse(pendingItemsJson);
-          let itemsCount = Object.keys(pendingItemsJson).length;
+          cache = JSON.parse(cache);
+          let itemsCount = Object.keys(cache).length;
 
           if (itemsCount > 0) {
-            console.log(`${itemsCount} captured items without verification`);
+            console.log(`${itemsCount} unverified items`);
 
-            for (let item in pendingItemsJson) {
-              let [key, value] = pendingItemsJson[item];
+            for (let item in cache) {
+              let [key, value] = cache[item];
               if (await are_services_configured(["verifier"])) {
                 await triggers.phonendo_verifier.verify(node, key, value);
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`"${value}" is not a valid JSON object`);
+        }
+      }
+    );
+  },
+
+  publish_cache: async (node) => {
+    await pipe_wrapper(
+      "verified",
+      await dial(node, "storage", "cache"),
+      async (data) => {
+        let cache = toString(data);
+        try {
+          cache = JSON.parse(cache);
+          let itemsCount = Object.keys(cache).length;
+
+          if (itemsCount > 0) {
+            console.log(`${itemsCount} unpublished items`);
+
+            for (let item in cache) {
+              let [key, value] = cache[item];
+              if (await are_services_configured(["publisher"])) {
+                await triggers.phonendo_publisher.publish(node, key, value);
               }
             }
           }
@@ -93,7 +120,9 @@ const phonendo_storage = {
       `${key}##${JSON.stringify(value)}`,
       await dial(node, "storage", "verify"),
       async () => {
-        await triggers.phonendo_publisher.publish(node, key, value);
+        if (await are_services_configured(["publisher"])) {
+          await triggers.phonendo_publisher.publish(node, key, value);
+        }
       }
     );
   },
@@ -170,15 +199,23 @@ const phonendo_verifier = {
 
 // Phonendo publisher triggers
 const phonendo_publisher = {
-  connect: async (_node) => {
-    console.log("TODO connect");
+  connect: async (node) => {
+    if (await are_services_configured(["storage"])) {
+      await triggers.phonendo_storage.publish_cache(node);
+    }
   },
 
   publish: async (node, key, value) => {
-    console.log("TODO publish on IOTA");
-    if (await are_services_configured(["storage"])) {
-      await triggers.phonendo_storage.publish(node, key, value);
-    }
+    await pipe_wrapper(
+      JSON.stringify(value),
+      await dial(node, "publisher", "publish"),
+      async (data) => {
+        console.log("publisher result", toString(data));
+        if (await are_services_configured(["storage"])) {
+          await triggers.phonendo_storage.publish(node, key, value);
+        }
+      }
+    );
   },
 };
 
@@ -201,7 +238,7 @@ const protocols = {
       console.warn("phonendo_storage unavailable. Capture will be lost");
       return fromString(false);
     }
-  }
+  },
 };
 
 start(protocols, triggers).then().catch(console.error);

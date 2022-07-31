@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { node, start, stop, get_node } from "./libp2p-node.js";
 
+import uuid4 from "uuid4";
 import { pipe } from "it-pipe";
 
 import { toString } from "uint8arrays/to-string";
@@ -56,7 +57,7 @@ const phonendo_storage = {
           let itemsCount = Object.keys(cache).length;
 
           if (itemsCount > 0) {
-            console.log(`${itemsCount} unverified items`);
+            console.log(`${itemsCount} not verified items`);
 
             for (let item in cache) {
               let [key, value] = cache[item];
@@ -100,27 +101,24 @@ const phonendo_storage = {
   },
 
   capture: async (node, message) => {
+    let key = uuid4();
     await pipe_wrapper(
-      `${message.key}##${JSON.stringify(message.value)}`,
+      `${key}##${JSON.stringify(message)}`,
       await dial(node, "storage", "capture"),
       async () => {
         if (await are_services_configured(["verifier", "storage"])) {
-          await triggers.phonendo_verifier.verify(
-            node,
-            message.key,
-            message.value
-          );
+          await triggers.phonendo_verifier.verify(node, key, message);
         }
       }
     );
   },
 
-  verify: async (node, key, value) => {
+  verify: async (node, key, value, verified) => {
     await pipe_wrapper(
-      `${key}##${JSON.stringify(value)}`,
+      `${key}##${JSON.stringify(value)}##${verified}`,
       await dial(node, "storage", "verify"),
       async () => {
-        if (await are_services_configured(["publisher"])) {
+        if (verified && (await are_services_configured(["publisher"]))) {
           await triggers.phonendo_publisher.publish(node, key, value);
         }
       }
@@ -161,6 +159,7 @@ const phonendo_verifier = {
   },
 
   verify: async (node, key, message) => {
+    delete message.status;
     await pipe_wrapper(
       JSON.stringify(message),
       await dial(node, "verifier", "verify"),
@@ -171,23 +170,29 @@ const phonendo_verifier = {
           let source = value.source;
           let signature = value.signature;
 
-          const verify = createVerify("SHA256");
-          verify.write(JSON.stringify(source));
-          verify.end();
-          const verification = verify.verify(
-            verifierPublicKey,
-            signature,
-            "hex"
-          );
-          console.log("Successful verification?", verification);
+          let verification = signature != "";
           if (verification) {
-            if (await are_services_configured(["storage"])) {
-              await triggers.phonendo_storage.verify(node, key, value);
-            } else {
-              console.warn(
-                "phonendo_storage unavailable. Verification will be lost"
-              );
-            }
+            const verify = createVerify("SHA256");
+            verify.write(JSON.stringify(source));
+            verify.end();
+            verification = verify.verify(verifierPublicKey, signature, "hex");
+            console.log("Successful verification?", verification);
+          }
+          if (await are_services_configured(["storage"])) {
+            await triggers.phonendo_storage.verify(
+              node,
+              key,
+              value,
+              verification
+            );
+          } else {
+            console.warn(
+              `phonendo_storage unavailable. ${
+                verification
+                  ? "Verification will be lost"
+                  : "Not verified message couldn't be deleted"
+              }`
+            );
           }
         } catch (error) {
           console.error(`"${value}" is not a valid JSON object`);
